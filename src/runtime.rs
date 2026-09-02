@@ -1,7 +1,9 @@
 use std::{
+    borrow::Cow,
     ffi::{CStr, CString},
     io::{self, Write},
     os::raw::{c_char, c_int, c_uint},
+    path::Path,
     ptr,
     sync::{
         Mutex, OnceLock,
@@ -15,10 +17,7 @@ use anyhow::{Context, Result, bail};
 use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
-use signal_hook::{
-    consts::signal::{SIGINT, SIGTERM},
-    iterator::Signals,
-};
+use signal_hook::consts::signal::{SIGINT, SIGTERM};
 
 use crate::{
     geometry::{DOOM_HEIGHT, DOOM_WIDTH},
@@ -62,6 +61,7 @@ unsafe extern "C" {
     fn doomgeneric_Create(argc: c_int, argv: *mut *mut c_char);
     fn doomgeneric_Tick();
     fn D_PostEvent(ev: *mut DoomEvent);
+    fn VVDOOM_SetSoundDirectory(directory: *const c_char) -> c_int;
 }
 
 struct RuntimeState {
@@ -142,23 +142,30 @@ pub fn install_signal_handlers() -> Result<()> {
     {
         return Ok(());
     }
-    let mut signals =
-        Signals::new([SIGINT, SIGTERM]).context("failed to install signal handlers")?;
-    if let Err(error) = thread::Builder::new()
-        .name("vvdoom-signals".to_string())
-        .spawn(move || {
-            for _ in signals.forever() {
-                request_exit();
-            }
-        })
+    // SAFETY: the handler only performs an atomic store, which is async-signal-safe, and all
+    // captured state is static. The registry keeps the handler installed after the ID is dropped.
+    let interrupt_handler = match unsafe { signal_hook::low_level::register(SIGINT, request_exit) }
     {
+        Ok(handler) => handler,
+        Err(error) => {
+            SIGNAL_HANDLERS_INSTALLED.store(false, Ordering::SeqCst);
+            return Err(error).context("failed to install SIGINT handler");
+        }
+    };
+    // SAFETY: this handler has the same static, atomic-only behavior as the SIGINT handler above.
+    if let Err(error) = unsafe { signal_hook::low_level::register(SIGTERM, request_exit) } {
+        signal_hook::low_level::unregister(interrupt_handler);
         SIGNAL_HANDLERS_INSTALLED.store(false, Ordering::SeqCst);
-        return Err(error).context("failed to spawn signal handler thread");
+        return Err(error).context("failed to install SIGTERM handler");
     }
     Ok(())
 }
 
-pub fn run(c_args: &mut [CString], presentation: Presentation) -> Result<()> {
+pub fn run(
+    c_args: &mut [CString],
+    presentation: Presentation,
+    sound_directory: &Path,
+) -> Result<()> {
     if STATE
         .set(Mutex::new(RuntimeState::new(presentation)))
         .is_err()
@@ -166,6 +173,14 @@ pub fn run(c_args: &mut [CString], presentation: Presentation) -> Result<()> {
         bail!("Doom runtime has already been initialized");
     }
     let argc = c_int::try_from(c_args.len()).context("too many Doom arguments")?;
+    let sound_directory = sound_directory_for_c(sound_directory);
+    let sound_directory = CString::new(sound_directory.as_bytes())
+        .context("sound directory contains an interior NUL byte")?;
+    // SAFETY: the bridge copies the NUL-terminated directory before returning, and sound setup
+    // happens before Doom or the mixer worker can read it.
+    if unsafe { VVDOOM_SetSoundDirectory(sound_directory.as_ptr()) } == 0 {
+        bail!("failed to allocate the sound directory path");
+    }
     let mut argv: Vec<*mut c_char> = c_args
         .iter_mut()
         .map(|arg| arg.as_ptr().cast_mut())
@@ -217,6 +232,19 @@ pub fn run(c_args: &mut [CString], presentation: Presentation) -> Result<()> {
         bail!(error);
     }
     Ok(())
+}
+
+fn sound_directory_for_c(path: &Path) -> Cow<'_, str> {
+    let path = path.to_string_lossy();
+    if cfg!(windows) {
+        if let Some(path) = path.strip_prefix(r"\\?\UNC\") {
+            return Cow::Owned(format!(r"\\{path}"));
+        }
+        if let Some(path) = path.strip_prefix(r"\\?\") {
+            return Cow::Owned(path.to_owned());
+        }
+    }
+    path
 }
 
 #[unsafe(no_mangle)]
@@ -463,6 +491,19 @@ mod tests {
         )));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn normalizes_verbatim_windows_sound_paths_for_miniaudio() {
+        assert_eq!(
+            sound_directory_for_c(Path::new(r"\\?\C:\games\vvdoom\sound")),
+            r"C:\games\vvdoom\sound"
+        );
+        assert_eq!(
+            sound_directory_for_c(Path::new(r"\\?\UNC\server\share\sound")),
+            r"\\server\share\sound"
+        );
+    }
+
     #[test]
     fn doom_engine_emits_nonzero_headless_pcm() {
         let presenter = TestPresenter::start(80, 24).unwrap();
@@ -483,12 +524,9 @@ mod tests {
             .join("doom1.wad");
         let sound_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("assets")
-            .join("sound");
-        // SAFETY: this is the only test that boots the process-global Doom engine, and it sets
-        // the bridge's private lookup directory before the engine or mixer worker can start.
-        unsafe {
-            std::env::set_var("VVDOOM_SOUND_DIR", sound_dir);
-        }
+            .join("sound")
+            .canonicalize()
+            .unwrap();
         let mut arguments = [
             CString::new("vvdoom-test").unwrap(),
             CString::new("-iwad").unwrap(),
@@ -502,7 +540,7 @@ mod tests {
             thread::sleep(Duration::from_secs(2));
             request_exit();
         });
-        run(&mut arguments, presentation).unwrap();
+        run(&mut arguments, presentation, &sound_dir).unwrap();
         stopper.join().unwrap();
         assert!(
             crate::media::nonzero_mixer_samples() > 0,

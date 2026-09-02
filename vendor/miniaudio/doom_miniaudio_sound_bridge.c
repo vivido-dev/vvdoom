@@ -18,7 +18,6 @@
 #include "w_wad.h"
 #include "z_zone.h"
 
-#define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio.h"
 
 static boolean sound_initialized = false;
@@ -37,14 +36,37 @@ static ma_engine_config gma_config;
 static ma_sound gma_current_music;
 static boolean gma_music_playing = false;
 static ma_uint64 gma_nonzero_samples = 0;
+static char *gma_sound_directory = NULL;
+
+int VVDOOM_SetSoundDirectory(const char *directory)
+{
+    char *copy;
+    size_t length;
+
+    if (directory == NULL)
+    {
+        free(gma_sound_directory);
+        gma_sound_directory = NULL;
+        return 1;
+    }
+
+    length = strlen(directory);
+    copy = malloc(length + 1);
+    if (copy == NULL)
+    {
+        return 0;
+    }
+    memcpy(copy, directory, length + 1);
+    free(gma_sound_directory);
+    gma_sound_directory = copy;
+    return 1;
+}
 
 static void BuildSoundPath(char *out, size_t out_len, const char *filename)
 {
-    const char *sound_dir = getenv("VVDOOM_SOUND_DIR");
-
-    if (sound_dir != NULL && sound_dir[0] != '\0')
+    if (gma_sound_directory != NULL && gma_sound_directory[0] != '\0')
     {
-        snprintf(out, out_len, "%s/%s", sound_dir, filename);
+        snprintf(out, out_len, "%s%c%s", gma_sound_directory, DIR_SEPARATOR, filename);
     }
     else
     {
@@ -232,8 +254,6 @@ static void I_MINI_AUDIO_PlaySong(void *handle, boolean looping) {
     ma_result result;
     result = ma_sound_init_from_file(&gma_engine, path, 0, NULL, NULL, &gma_current_music);
     if (result != MA_SUCCESS) {
-        // Uncomment this to see which music tracks are missing
-        // fprintf(stderr, "Music not found: %s\n", path);
         return;
     }
     ma_sound_set_looping(&gma_current_music, looping);

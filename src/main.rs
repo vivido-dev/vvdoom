@@ -31,15 +31,9 @@ fn run() -> anyhow::Result<()> {
     let doom_argv = cli::build_doom_argv(&asset_dir, args.doom_args.clone());
     let mut c_args = cli::to_c_args(&doom_argv)?;
 
-    // The C engine is single-threaded until doomgeneric_Create returns. Set the private sound
-    // lookup path before miniaudio can observe it from the mixer thread.
-    unsafe {
-        std::env::set_var("VVDOOM_SOUND_DIR", asset_dir.join("sound"));
-    }
-
     runtime::reset_exit_request();
     runtime::install_signal_handlers()?;
     let presentation = media::Presentation::connect(&args, sound_enabled)?;
     let _terminal = terminal::TerminalSession::enter()?;
-    runtime::run(&mut c_args, presentation)
+    runtime::run(&mut c_args, presentation, &asset_dir.join("sound"))
 }

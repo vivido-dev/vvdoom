@@ -86,9 +86,6 @@ fn main() {
     build
         .include("vendor/doomgeneric")
         .include("vendor/miniaudio")
-        // Vendored doomtype.h defines true/false as enum constants, which is
-        // illegal under the C23 default of GCC 15+; pin the older standard.
-        .std("gnu11")
         .define("FEATURE_SOUND", None)
         .define("_THREADSAFE", None)
         .warnings(false)
@@ -96,11 +93,20 @@ fn main() {
         .flag_if_supported("-Wno-unused-parameter")
         .flag_if_supported("-Wno-missing-field-initializers");
 
+    // Vendored doomtype.h defines true/false as enum constants, which is
+    // illegal under the C23 default of GCC 15+; pin the older standard. MSVC
+    // does not accept cc's GNU-style standard flag and already compiles C here.
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
+        build.std("gnu11");
+    }
+
     for source in DOOMGENERIC_SOURCES {
         build.file(source);
         println!("cargo:rerun-if-changed={source}");
     }
 
+    build.file("vendor/miniaudio/miniaudio_impl.c");
+    println!("cargo:rerun-if-changed=vendor/miniaudio/miniaudio_impl.c");
     build.file("vendor/miniaudio/doom_miniaudio_sound_bridge.c");
     println!("cargo:rerun-if-changed=vendor/miniaudio/doom_miniaudio_sound_bridge.c");
     println!("cargo:rerun-if-changed=vendor/miniaudio/miniaudio.h");

@@ -131,7 +131,10 @@ mod tests {
     fn injects_default_iwad_when_missing() {
         let argv = build_doom_argv(Path::new("/tmp/assets"), vec![OsString::from("-nosound")]);
         assert!(argv.iter().any(|arg| arg == "-iwad"));
-        assert!(argv.iter().any(|arg| arg == "/tmp/assets/doom1.wad"));
+        assert!(
+            argv.iter()
+                .any(|arg| arg == Path::new("/tmp/assets").join("doom1.wad").as_os_str())
+        );
         assert!(has_doom_flag(&argv, "-nosound"));
     }
 
