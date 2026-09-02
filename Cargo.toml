@@ -2,7 +2,23 @@
 name = "vvdoom"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.87.0"
 license = "GPL-2.0-or-later"
-description = "Play Doom inside terminal"
+description = "Play Doom in Vivido through Vivid Protocol 1.5"
+repository = "https://github.com/vivido-dev/vvdoom"
+readme = "README.md"
+build = "build.rs"
 
 [dependencies]
+anyhow = "1.0"
+clap = { version = "4.6", features = ["derive", "env"] }
+crossterm = "0.29"
+signal-hook = "0.3"
+vivid_protocol = { version = "1.5", path = "../vivid_protocol" }
+vivid_sdk = { version = "1.5", path = "../vivid_sdk" }
+
+[build-dependencies]
+cc = "1.2"
+
+[dev-dependencies]
+vivid_sdk = { version = "1.5", path = "../vivid_sdk", features = ["testing"] }
