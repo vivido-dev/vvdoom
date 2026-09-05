@@ -626,6 +626,7 @@ fn raster_configuration(session: &Session, surface: &Surface) -> io::Result<Trac
         .and_then(|bits| bits.checked_mul(VIDEO_RATE))
         .ok_or_else(|| invalid_input("raster bitrate claim overflows"))?;
     Ok(TrackConfiguration {
+        direction: Default::default(),
         context_id: surface.context_id(),
         surface_id: surface.id(),
         track_id: session.allocate_id()?,
@@ -661,6 +662,7 @@ fn audio_configuration(session: &Session, surface: &Surface) -> io::Result<Track
         .and_then(|bits| bits.checked_mul(1_000_000 / AUDIO_FRAME_US))
         .ok_or_else(|| invalid_input("audio bitrate claim overflows"))?;
     Ok(TrackConfiguration {
+        direction: Default::default(),
         context_id: surface.context_id(),
         surface_id: surface.id(),
         track_id: session.allocate_id()?,
