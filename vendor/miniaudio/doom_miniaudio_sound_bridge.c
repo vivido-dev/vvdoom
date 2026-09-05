@@ -220,7 +220,10 @@ static void *I_MINI_AUDIO_RegisterSong(void *data, int len) {
     char* name = data;
     size_t str_len = strlen(name);
     char* copy = malloc(str_len+1);
-    int res = ma_strcpy_s(copy, str_len+1, name);
+    if (copy == NULL) {
+        return NULL;
+    }
+    memcpy(copy, name, str_len+1);
     return copy;
 }
 
