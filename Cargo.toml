@@ -13,7 +13,7 @@ build = "build.rs"
 anyhow = "1.0"
 clap = { version = "4.6", features = ["derive", "env"] }
 crossterm = "0.29"
-signal-hook = "0.3"
+signal-hook = "0.4"
 vivid_protocol = { version = "1.5", path = "../vivid_protocol" }
 vivid_sdk = { version = "1.5", path = "../vivid_sdk" }
 
