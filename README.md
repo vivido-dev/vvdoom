@@ -60,6 +60,13 @@ stale video or old queued audio without blocking Doom's simulation and input thr
 record is a full recovery frame, allowing Vivido or a terminating vvmux presenter to request and
 retain a fresh composed framebuffer without a cross-hop delta dependency.
 
+Doom draws twice per 35 Hz tic, so the raster path is shaped for latency rather than throughput: a
+frame is submitted only when its pixels differ from the one before it, and the worker waits out the
+declared frame period *before* taking a frame from the queue instead of after. Both keep the
+channel's rate limiter from holding an already-stale image, which is what a keypress-to-picture
+delay is made of. A motionless screen is re-sent once a second so a recovered channel is never left
+blank.
+
 The included `doom1.wad` is the Doom shareware episode. Supply a separately licensed WAD with
 `-iwad` for other game data.
 

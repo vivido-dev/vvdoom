@@ -31,6 +31,15 @@ use crate::{
 };
 
 const VIDEO_RATE: u64 = 35;
+/// The declared raster period, enforced before a frame is taken rather than after.
+///
+/// `send_raster_adaptive` blocks inside the channel's declared-rate limiter, so a frame taken
+/// before that block is already a frame old by the time the record goes out. Doom offers frames
+/// faster than the declared rate — its renderer shimmers between the two draws of one 35 Hz tic —
+/// which keeps the limiter permanently saturated and makes that staleness permanent. Waiting the
+/// period out first and taking the frame afterwards costs the same bandwidth and sends the newest
+/// image instead of the one that was newest a frame ago.
+const VIDEO_FRAME_PERIOD: Duration = Duration::from_nanos(1_000_000_000 / VIDEO_RATE);
 const VIDEO_SLOT: u64 = 3;
 const AUDIO_SLOT: u64 = 2;
 const MEDIA_EPOCH: u32 = 1;
@@ -441,7 +450,13 @@ impl Presentation {
             .name("vvdoom-vivid-raster".into())
             .spawn(move || {
                 let mut frame_id = 0_u64;
-                while let Some(frame) = queue.pop() {
+                let mut next_send = Instant::now();
+                loop {
+                    if let Some(wait) = next_send.checked_duration_since(Instant::now()) {
+                        thread::sleep(wait);
+                    }
+                    let Some(frame) = queue.pop() else { break };
+                    next_send = next_raster_deadline(next_send, Instant::now());
                     frame_id = match frame_id.checked_add(1) {
                         Some(value) => value,
                         None => {
@@ -691,6 +706,16 @@ fn audio_configuration(session: &Session, surface: &Surface) -> io::Result<Track
     })
 }
 
+/// When the raster worker may take its next frame, given when it took this one.
+///
+/// Advancing by exactly one period keeps the declared rate met rather than undershot. Clamping to
+/// `taken` stops an idle stretch from banking credit for a burst, so the first frame after a still
+/// screen goes out the moment Doom draws it instead of waiting out a schedule that ran on without
+/// it.
+fn next_raster_deadline(previous: Instant, taken: Instant) -> Instant {
+    (previous + VIDEO_FRAME_PERIOD).max(taken)
+}
+
 fn frame_pixel_bytes() -> io::Result<u32> {
     DOOM_WIDTH
         .checked_mul(DOOM_HEIGHT)
@@ -901,10 +926,31 @@ mod tests {
     }
 
     #[test]
+    fn raster_pacing_holds_the_declared_rate_without_banking_idle_credit() {
+        let start = Instant::now();
+        // Frames offered faster than the declared rate are taken exactly one period apart, so the
+        // channel's own limiter always has capacity and never holds a frame past its freshness.
+        let mut deadline = start;
+        for step in 1..=4 {
+            deadline = next_raster_deadline(deadline, start);
+            assert_eq!(deadline, start + VIDEO_FRAME_PERIOD * step);
+        }
+
+        // A still screen leaves the schedule far behind. The frame that ends it is not made to
+        // wait out the periods that elapsed with nothing to send.
+        let resumed = start + Duration::from_secs(5);
+        assert_eq!(next_raster_deadline(deadline, resumed), resumed);
+    }
+
+    #[test]
     fn checked_claims_cover_raw_raster_and_pcm() {
         assert_eq!(frame_pixel_bytes().unwrap(), 1_024_000);
         assert_eq!(AUDIO_PACKET_BYTES, 7_680);
         assert_eq!(VIDEO_RATE * 1_000, 35_000);
+        assert_eq!(
+            VIDEO_FRAME_PERIOD * VIDEO_RATE as u32,
+            Duration::from_nanos(999_999_980)
+        );
         assert_eq!(1_000_000 / AUDIO_FRAME_US, 50);
     }
 
@@ -913,8 +959,10 @@ mod tests {
         let samples = [0.25_f32, -0.75_f32, 1.0_f32];
         let encoded = pcm_f32le(&samples);
         let decoded = encoded
-            .chunks_exact(size_of::<f32>())
-            .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+            .as_chunks::<{ size_of::<f32>() }>()
+            .0
+            .iter()
+            .map(|bytes| f32::from_le_bytes(*bytes))
             .collect::<Vec<_>>();
         assert_eq!(decoded, samples);
     }

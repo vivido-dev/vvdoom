@@ -29,6 +29,13 @@ use crate::{
 const DOOM_PIXELS: usize = DOOM_WIDTH as usize * DOOM_HEIGHT as usize;
 const RGBA_FRAME_BYTES: usize = DOOM_PIXELS * 4;
 const KEY_QUEUE_LEN: usize = 32;
+/// How long an unchanged framebuffer may go unsent.
+///
+/// The presenter retains the latest full frame, so a still image needs no repeats to stay on
+/// screen. A channel that recovers into a new generation does need one, and Doom can sit on a
+/// motionless menu indefinitely, so re-send the retained image at a rate that costs nothing
+/// against the declared 35 records/s rather than leaving a recovered channel blank.
+const FRAME_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
 static STATE: OnceLock<Mutex<RuntimeState>> = OnceLock::new();
 static EXIT_FLAG: AtomicBool = AtomicBool::new(false);
@@ -73,6 +80,7 @@ struct RuntimeState {
     last_mouse_position: Option<(u16, u16)>,
     mouse_buttons: c_int,
     rgba_frame: Vec<u8>,
+    frame_sent_at: Option<Instant>,
     presentation: Option<Presentation>,
     fatal_error: Option<String>,
 }
@@ -88,6 +96,7 @@ impl RuntimeState {
             last_mouse_position: None,
             mouse_buttons: 0,
             rgba_frame: vec![0; RGBA_FRAME_BYTES],
+            frame_sent_at: None,
             presentation: Some(presentation),
             fatal_error: None,
         }
@@ -255,11 +264,25 @@ pub extern "C" fn DG_DrawFrame() {
     with_state_mut(|state| {
         drain_terminal_events(state);
         state.poll_presentation();
-        convert_doom_pixels_from_global(&mut state.rgba_frame);
-        if let Some(presentation) = &state.presentation
-            && let Err(error) = presentation.submit_frame(&state.rgba_frame)
-        {
-            state.fail(error);
+        let changed = convert_doom_pixels_from_global(&mut state.rgba_frame);
+        // Doom draws twice per 35 Hz tic: once when TryRunTics returns early so the menu stays
+        // responsive, and once after the tic it waited for actually runs. Submitting both halves
+        // spends the whole declared 35 records/s budget on a stream that is half repeats, and the
+        // raster worker then sits out a full frame period inside the rate limiter still holding
+        // the frame it took before the wait — so every image reaches the wire about one frame
+        // after a newer one already existed. Submitting only what changed keeps production at the
+        // declared rate, which leaves the limiter with capacity in hand and puts each new frame
+        // on the wire as soon as Doom draws it.
+        let refresh_due = state
+            .frame_sent_at
+            .is_none_or(|sent| sent.elapsed() >= FRAME_REFRESH_INTERVAL);
+        if changed || refresh_due {
+            if let Some(presentation) = &state.presentation
+                && let Err(error) = presentation.submit_frame(&state.rgba_frame)
+            {
+                state.fail(error);
+            }
+            state.frame_sent_at = Some(Instant::now());
         }
     });
 }
@@ -427,26 +450,37 @@ fn accelerate_mouse(delta: c_int, clamp: f32) -> c_int {
     (dx * clamp.min(8.0 * dx.abs().exp())) as c_int
 }
 
-fn convert_doom_pixels_from_global(output: &mut [u8]) {
+fn convert_doom_pixels_from_global(output: &mut [u8]) -> bool {
     // SAFETY: Doom owns a 640x400 u32 framebuffer from initialization through shutdown. A null
     // pointer means no frame is available yet.
     let screen = unsafe {
         let pointer = DG_ScreenBuffer;
         if pointer.is_null() {
-            return;
+            return false;
         }
         std::slice::from_raw_parts(pointer, DOOM_PIXELS)
     };
-    convert_doom_pixels(screen, output);
+    convert_doom_pixels(screen, output)
 }
 
-pub fn convert_doom_pixels(input: &[u32], output: &mut [u8]) {
-    for (pixel, rgba) in input.iter().zip(output.chunks_exact_mut(4)) {
-        rgba[0] = ((pixel >> 16) & 0xff) as u8;
-        rgba[1] = ((pixel >> 8) & 0xff) as u8;
-        rgba[2] = (pixel & 0xff) as u8;
-        rgba[3] = u8::MAX;
+/// Convert Doom's packed framebuffer into `output`, reporting whether the image changed.
+///
+/// `output` holds the previously converted frame, so the comparison is the write it was already
+/// going to do rather than a second pass over a megabyte.
+pub fn convert_doom_pixels(input: &[u32], output: &mut [u8]) -> bool {
+    let mut changed = false;
+    let (pixels, _) = output.as_chunks_mut::<4>();
+    for (pixel, rgba) in input.iter().zip(pixels) {
+        let converted = [
+            ((pixel >> 16) & 0xff) as u8,
+            ((pixel >> 8) & 0xff) as u8,
+            (pixel & 0xff) as u8,
+            u8::MAX,
+        ];
+        changed |= *rgba != converted;
+        *rgba = converted;
     }
+    changed
 }
 
 #[cfg(test)]
@@ -460,8 +494,19 @@ mod tests {
     fn converts_packed_doom_pixels_to_rgba() {
         let input = [0x0012_3456, 0x00ab_cdef];
         let mut output = [0; 8];
-        convert_doom_pixels(&input, &mut output);
+        assert!(convert_doom_pixels(&input, &mut output));
         assert_eq!(output, [0x12, 0x34, 0x56, 0xff, 0xab, 0xcd, 0xef, 0xff]);
+    }
+
+    #[test]
+    fn reconverting_the_same_framebuffer_reports_no_change() {
+        let input = [0x0012_3456, 0x00ab_cdef];
+        let mut output = [0; 8];
+        assert!(convert_doom_pixels(&input, &mut output));
+        assert!(!convert_doom_pixels(&input, &mut output));
+        let moved = [0x0012_3456, 0x00ab_cdee];
+        assert!(convert_doom_pixels(&moved, &mut output));
+        assert_eq!(output[4..], [0xab, 0xcd, 0xee, 0xff]);
     }
 
     #[test]
