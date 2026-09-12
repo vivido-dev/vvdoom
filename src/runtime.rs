@@ -15,7 +15,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 
@@ -348,13 +348,36 @@ fn with_state_mut<T>(f: impl FnOnce(&mut RuntimeState) -> T) -> Option<T> {
 }
 
 fn drain_terminal_events(state: &mut RuntimeState) {
-    while let Ok(true) = event::poll(Duration::ZERO) {
-        match event::read() {
-            Ok(Event::Key(key)) => handle_key_event(state, key),
-            Ok(Event::Mouse(mouse)) => handle_mouse_event(state, mouse),
-            Ok(Event::Resize(_, _)) => state.last_mouse_position = None,
-            Ok(_) => {}
-            Err(_) => break,
+    // Bound each drain so continuous mouse motion cannot starve the simulation.
+    let available =
+        (state.key_queue_read_idx + KEY_QUEUE_LEN - state.key_queue_write_idx - 1) % KEY_QUEUE_LEN;
+    for _ in 0..available {
+        match read_terminal_event() {
+            Ok(Some(Event::Key(key))) => handle_key_event(state, key),
+            Ok(Some(Event::Mouse(mouse))) => handle_mouse_event(state, mouse),
+            Ok(Some(Event::Resize(_, _))) => state.last_mouse_position = None,
+            Ok(Some(_)) => {}
+            Ok(None) => break,
+            Err(error) => {
+                #[cfg(windows)]
+                state.fail(error);
+                #[cfg(not(windows))]
+                let _ = error;
+                break;
+            }
+        }
+    }
+}
+
+fn read_terminal_event() -> io::Result<Option<Event>> {
+    #[cfg(windows)]
+    return crate::windows_input::read_event();
+    #[cfg(not(windows))]
+    {
+        if crossterm::event::poll(Duration::ZERO)? {
+            crossterm::event::read().map(Some)
+        } else {
+            Ok(None)
         }
     }
 }

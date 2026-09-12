@@ -17,6 +17,9 @@ signal-hook = "0.4"
 vivid_protocol = { version = "1.5", path = "../vivid_protocol" }
 vivid_sdk = { version = "1.5", path = "../vivid_sdk" }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Console", "Win32_System_IO"] }
+
 [build-dependencies]
 cc = "1.4"
 

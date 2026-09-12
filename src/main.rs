@@ -5,6 +5,8 @@ mod input;
 mod media;
 mod runtime;
 mod terminal;
+#[cfg(windows)]
+mod windows_input;
 
 use std::process::ExitCode;
 

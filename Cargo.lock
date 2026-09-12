@@ -647,6 +647,7 @@ dependencies = [
  "signal-hook 0.4.4",
  "vivid_protocol",
  "vivid_sdk",
+ "windows-sys",
 ]
 
 [[package]]

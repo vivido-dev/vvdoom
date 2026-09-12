@@ -55,6 +55,11 @@ miniaudio headless mixer -> bounded 20 ms PCM queue -> Vivid realtime audio
 terminal keyboard/pixel mouse -> Doom event queue
 ```
 
+On Windows, a bounded input worker reads the ConPTY VT stream directly and decodes enhanced
+keyboard press/repeat/release events and SGR pixel mouse reports. Native console key records
+contain synthetic releases, so they cannot represent held game controls. The worker restores the
+original console mode and cancels its pending read on exit.
+
 Raster and audio have independent bounded workers. A congested SSH or vvmux media hop can discard
 stale video or old queued audio without blocking Doom's simulation and input thread. Every raster
 record is a full recovery frame, allowing Vivido or a terminating vvmux presenter to request and
@@ -77,6 +82,13 @@ cargo fmt --all --check
 cargo test --all-targets
 cargo clippy --all-targets -- -D warnings
 ```
+
+On Windows, also run `python tests/windows_input.py`. This starts an isolated ConPTY and checks
+repeated arrow/movement direction changes, real key releases, reader shutdown, and console mode
+restoration. The driver uses Vivido's exact key sequences, including omitted default parameters.
+To diagnose a different console host, pass `--conpty "C:/path/to/conpty.dll"`; older third-party
+DLLs may discard releases even with VT input enabled. Vivido must use the built-in Windows
+console host for this path.
 
 Vvdoom and its Doom-derived source are distributed under GPL-2.0-or-later. Vendored miniaudio is
 available under its own public-domain or MIT-0 terms documented in its header.

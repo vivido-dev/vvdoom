@@ -7,19 +7,22 @@ use anyhow::Result;
 use crossterm::{
     Command,
     cursor::{Hide, MoveTo, Show},
-    event::{DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags},
+    event::KeyboardEnhancementFlags,
     execute,
-    terminal::{
-        Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
-        enable_raw_mode,
-    },
+    terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
 
 pub struct TerminalSession;
 
 impl TerminalSession {
     pub fn enter() -> Result<Self> {
-        enable_raw_mode()?;
+        #[cfg(not(windows))]
+        crossterm::terminal::enable_raw_mode()?;
+        #[cfg(windows)]
+        if let Err(error) = crate::windows_input::start() {
+            restore_terminal();
+            return Err(error.into());
+        }
         let mut stdout = io::stdout();
         if let Err(error) = execute!(
             stdout,
@@ -29,7 +32,6 @@ impl TerminalSession {
                     | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
                     | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
             ),
-            EnableMouseCapture,
             EnableSgrPixelMouse,
             Hide,
             Clear(ClearType::All),
@@ -56,18 +58,20 @@ pub fn clear_for_presentation() -> io::Result<()> {
 }
 
 pub fn restore_terminal() {
+    #[cfg(windows)]
+    crate::windows_input::stop();
     let mut stdout = io::stdout();
     let _ = execute!(
         stdout,
         Show,
         DisableSgrPixelMouse,
-        DisableMouseCapture,
         PopKeyboardEnhancement,
         LeaveAlternateScreen,
         MoveTo(0, 0)
     );
     let _ = stdout.flush();
-    let _ = disable_raw_mode();
+    #[cfg(not(windows))]
+    let _ = crossterm::terminal::disable_raw_mode();
 }
 
 pub fn install_panic_restore_hook() {
@@ -127,11 +131,7 @@ struct PushKeyboardEnhancement(KeyboardEnhancementFlags);
 
 impl Command for PushKeyboardEnhancement {
     fn write_ansi(&self, formatter: &mut impl std::fmt::Write) -> std::fmt::Result {
-        if cfg!(windows) {
-            Ok(())
-        } else {
-            write!(formatter, "\x1b[>{}u", self.0.bits())
-        }
+        write!(formatter, "\x1b[>{}u", self.0.bits())
     }
 
     #[cfg(windows)]
@@ -153,11 +153,7 @@ struct PopKeyboardEnhancement;
 
 impl Command for PopKeyboardEnhancement {
     fn write_ansi(&self, formatter: &mut impl std::fmt::Write) -> std::fmt::Result {
-        if cfg!(windows) {
-            Ok(())
-        } else {
-            formatter.write_str("\x1b[<1u")
-        }
+        formatter.write_str("\x1b[<1u")
     }
 
     #[cfg(windows)]
