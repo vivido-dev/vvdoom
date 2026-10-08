@@ -2,7 +2,7 @@
 name = "vvdoom"
 version = "0.1.1"
 edition = "2024"
-rust-version = "1.88.0"
+rust-version = "1.95.0"
 license = "GPL-2.0-or-later"
 description = "Play Doom in Vivido through Vivid Protocol 1.5"
 repository = "https://github.com/vivido-dev/vvdoom"
