@@ -357,7 +357,7 @@ impl Presentation {
             Ok(()) => Ok(()),
             Err(error)
                 if presenter_code(&error)
-                    == Some(vivid_protocol::registry::error::STALE_TARGET_GENERATION) =>
+                    == Some(vivid_protocol::messages::ERROR_STALE_TARGET_GENERATION) =>
             {
                 let mut applied = false;
                 while let Some(event) = self.session.take_event()? {
@@ -602,7 +602,7 @@ fn create_terminal_node(
             Ok(_) => return Ok((terminal, node)),
             Err(error)
                 if presenter_code(&error)
-                    == Some(vivid_protocol::registry::error::STALE_TARGET_GENERATION) =>
+                    == Some(vivid_protocol::messages::ERROR_STALE_TARGET_GENERATION) =>
             {
                 let mut applied = false;
                 while let Some(event) = session.take_event()? {
